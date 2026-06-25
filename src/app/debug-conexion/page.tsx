@@ -32,6 +32,46 @@ export default function DebugConexion() {
     setChecks([]);
     setRunning(true);
 
+    // 0 — Variables del servidor (NODE_OPTIONS, NODE_ENV real, memoria)
+    addCheck({ label: 'Servidor: NODE_OPTIONS', status: 'running', detail: 'Consultando...' });
+    try {
+      const res = await fetch('/api/server-info');
+      const data = await res.json();
+
+      addCheck({
+        label: 'Servidor: NODE_OPTIONS',
+        status: data.NODE_OPTIONS ? 'ok' : 'error',
+        detail: data.NODE_OPTIONS
+          ? data.NODE_OPTIONS
+          : 'No definida — el límite de memoria NO está activo. Agrega NODE_OPTIONS=--max-old-space-size=512 en el panel de hosting',
+      });
+
+      addCheck({
+        label: 'Servidor: límite de memoria heap',
+        status: data.max_old_space_mb ? 'ok' : 'error',
+        detail: data.max_old_space_mb
+          ? `${data.max_old_space_mb} MB — límite activo`
+          : 'Sin límite — Node.js puede consumir toda la RAM del servidor',
+      });
+
+      addCheck({
+        label: 'Servidor: NODE_ENV',
+        status: data.NODE_ENV === 'production' ? 'ok' : 'warn',
+        detail: data.NODE_ENV
+          ? `${data.NODE_ENV}${data.NODE_ENV !== 'production' ? ' — cambia Application mode a Production en cPanel' : ''}`
+          : '(no definido)',
+      });
+
+      addCheck({
+        label: 'Servidor: uso actual de memoria heap',
+        status: data.max_old_space_mb && data.memory_usage_mb > data.max_old_space_mb * 0.85 ? 'warn' : 'ok',
+        detail: `${data.memory_usage_mb} MB usados — Node.js ${data.node_version} · uptime ${Math.floor(data.uptime_seconds / 60)} min`,
+      });
+
+    } catch {
+      addCheck({ label: 'Servidor: NODE_OPTIONS', status: 'error', detail: 'No se pudo consultar /api/server-info' });
+    }
+
     // 1 — Variables de entorno baked en el build
     const apiDefinida = !!process.env.NEXT_PUBLIC_API_URL;
     const backDefinida = !!process.env.NEXT_PUBLIC_BACKEND_URL;
