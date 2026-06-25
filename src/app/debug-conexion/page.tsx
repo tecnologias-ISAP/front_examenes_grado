@@ -1,6 +1,21 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
+
+interface MemorySample { ts: number; heap_mb: number; rss_mb: number; }
+interface ServerInfo {
+  NODE_ENV: string | null;
+  NODE_OPTIONS: string | null;
+  max_old_space_mb: number | null;
+  node_version: string;
+  uptime_seconds: number;
+  heap_mb: number;
+  rss_mb: number;
+  heap_pct: number | null;
+  growth_mb: number;
+  elapsed_min: number;
+  samples: MemorySample[];
+}
 
 interface CheckResult {
   label: string;
@@ -23,6 +38,30 @@ function getCookie(name: string): string | null {
 export default function DebugConexion() {
   const [checks, setChecks] = useState<CheckResult[]>([]);
   const [running, setRunning] = useState(false);
+  const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  async function fetchMemory() {
+    try {
+      const res = await fetch('/api/server-info');
+      const data: ServerInfo = await res.json();
+      setServerInfo(data);
+    } catch { /* ignore */ }
+  }
+
+  useEffect(() => {
+    fetchMemory();
+  }, []);
+
+  useEffect(() => {
+    if (autoRefresh) {
+      intervalRef.current = setInterval(fetchMemory, 10000);
+    } else {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    }
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+  }, [autoRefresh]);
 
   function addCheck(c: CheckResult) {
     setChecks(prev => [...prev.filter(p => p.label !== c.label), c]);
@@ -325,6 +364,97 @@ export default function DebugConexion() {
           >
             {running ? 'Ejecutando...' : 'Volver a ejecutar'}
           </button>
+        </div>
+
+        {/* ── Monitor de memoria en vivo ── */}
+        <div style={{ background: '#fff', border: '1px solid #CCD0D8', borderRadius: 10, padding: '1.25rem 1.5rem', marginTop: '1.5rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+            <strong style={{ fontSize: '0.875rem', color: '#1f2937' }}>Monitor de memoria — proceso Node.js</strong>
+            <label style={{ fontSize: '0.8rem', color: '#6b7280', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={autoRefresh}
+                onChange={e => setAutoRefresh(e.target.checked)}
+              />
+              Auto-refresh cada 10 s
+            </label>
+          </div>
+
+          {serverInfo && (() => {
+            const limit = serverInfo.max_old_space_mb ?? 512;
+            const pct = Math.round((serverInfo.heap_mb / limit) * 100);
+            const barColor = pct > 85 ? '#ef4444' : pct > 60 ? '#d97706' : '#10b981';
+            const samples = serverInfo.samples;
+            const maxHeap = Math.max(...samples.map(s => s.heap_mb), limit);
+
+            return (
+              <>
+                {/* Barra de uso actual */}
+                <div style={{ marginBottom: '1rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#6b7280', marginBottom: 4 }}>
+                    <span>Heap usado: <strong style={{ color: barColor }}>{serverInfo.heap_mb} MB</strong></span>
+                    <span>Límite: {limit} MB ({pct}%)</span>
+                  </div>
+                  <div style={{ background: '#f0f0f0', borderRadius: 4, height: 10, overflow: 'hidden' }}>
+                    <div style={{ width: `${Math.min(pct, 100)}%`, background: barColor, height: '100%', transition: 'width 0.3s' }} />
+                  </div>
+                </div>
+
+                {/* Métricas secundarias */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 8, marginBottom: '1rem' }}>
+                  {[
+                    { label: 'RSS total', value: `${serverInfo.rss_mb} MB` },
+                    { label: 'Crecimiento', value: `+${serverInfo.growth_mb} MB`, alert: serverInfo.growth_mb > 50 },
+                    { label: 'En ${serverInfo.elapsed_min} min', value: serverInfo.elapsed_min > 0 ? `${serverInfo.elapsed_min} min` : '< 1 min' },
+                    { label: 'Uptime', value: `${Math.floor(serverInfo.uptime_seconds / 60)} min` },
+                  ].map(m => (
+                    <div key={m.label} style={{ background: '#f9fafb', borderRadius: 6, padding: '8px 10px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.7rem', color: '#9ca3af', marginBottom: 2 }}>{m.label}</div>
+                      <div style={{ fontSize: '0.875rem', fontWeight: 700, color: m.alert ? '#ef4444' : '#1f2937' }}>{m.value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Gráfica de muestras */}
+                {samples.length > 1 && (
+                  <div>
+                    <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginBottom: 4 }}>
+                      Historial heap ({samples.length} muestras)
+                    </div>
+                    <svg viewBox={`0 0 ${samples.length * 8} 60`} style={{ width: '100%', height: 60, display: 'block' }}>
+                      {/* Línea de límite */}
+                      <line
+                        x1={0} y1={60 - (limit / maxHeap) * 60}
+                        x2={samples.length * 8} y2={60 - (limit / maxHeap) * 60}
+                        stroke="#ef4444" strokeWidth={0.5} strokeDasharray="2,2"
+                      />
+                      {/* Área */}
+                      <polyline
+                        points={samples.map((s, i) => `${i * 8 + 4},${60 - (s.heap_mb / maxHeap) * 58}`).join(' ')}
+                        fill="none" stroke="#003366" strokeWidth={1.5}
+                      />
+                      {samples.map((s, i) => (
+                        <circle key={i} cx={i * 8 + 4} cy={60 - (s.heap_mb / maxHeap) * 58} r={2} fill="#003366" />
+                      ))}
+                    </svg>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: '#9ca3af' }}>
+                      <span>{new Date(samples[0].ts).toLocaleTimeString()}</span>
+                      <span style={{ color: '#ef4444' }}>— límite {limit} MB</span>
+                      <span>{new Date(samples[samples.length - 1].ts).toLocaleTimeString()}</span>
+                    </div>
+                  </div>
+                )}
+              </>
+            );
+          })()}
+
+          {!serverInfo && <p style={{ color: '#9ca3af', fontSize: '0.8rem' }}>Cargando...</p>}
+
+          <div style={{ textAlign: 'right', marginTop: 8 }}>
+            <button onClick={fetchMemory} style={{ fontSize: '0.75rem', color: '#003366', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>
+              Actualizar ahora
+            </button>
+          </div>
         </div>
 
         <p style={{ textAlign: 'center', fontSize: '0.75rem', color: '#6b7280', marginTop: '1.5rem' }}>
